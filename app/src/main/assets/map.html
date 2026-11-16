@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+ html,body{margin:0;height:100%;background:#0b1220;font-family:sans-serif;color:#e8eefc}
+ #map{position:absolute;inset:0}
+ #top{position:absolute;z-index:1000;top:8px;left:8px;right:8px;display:flex;gap:6px}
+ #q{flex:1;padding:11px;border-radius:10px;border:0;font-size:15px;direction:ltr;background:#fff;color:#111}
+ button{padding:10px 13px;border:0;border-radius:10px;background:#f5b301;color:#111;font-weight:bold;font-size:15px}
+ #info{position:absolute;z-index:1000;left:8px;right:8px;bottom:8px;background:#0b1220ee;border-radius:12px;padding:10px;font-size:13px;direction:ltr;display:none}
+ #panel{position:absolute;z-index:1001;top:58px;right:8px;left:8px;max-height:70%;overflow:auto;background:#0b1220f2;border-radius:12px;padding:10px;display:none}
+ .row{border-bottom:1px solid #243049;padding:8px 0}
+ .row label{display:flex;align-items:center;gap:8px;font-size:14px}
+ .ctl{display:none;margin-top:6px;font-size:12px}
+ .ctl div{display:flex;align-items:center;gap:6px}.ctl input[type=range]{flex:1}
+ select{width:100%;padding:8px;border-radius:8px;margin-bottom:8px}
+ #msg{color:#ff8a8a;font-size:13px}
+ .small{color:#9fb0d0;font-size:12px}
+</style></head><body>
+<div id="map"></div>
+<div id="top"><input id="q" placeholder="30.0444, 31.2357  |  30°02'39.8&quot;N 31°14'08.5&quot;E">
+<button id="go">بحث</button><button id="loc">📍</button><button id="lay">☰</button></div>
+<div id="panel"></div><div id="info"></div>
+<script>/*COORDS_JS*/</script>
+<script>
+const GIBS=(layer,set,ext,dated)=>'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/'+layer+'/default/'+(dated?'{time}/':'')+set+'/{z}/{y}/{x}.'+ext;
+const day=new Date(Date.now()-3*864e5).toISOString().slice(0,10);
+const BASES=[
+ {id:'sat',name:'قمر صناعي (Esri)',url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',nz:19},
+ {id:'topo',name:'طبوغرافية (OpenTopoMap)',url:'https://tile.opentopomap.org/{z}/{x}/{y}.png',nz:17},
+ {id:'osm',name:'شوارع (OSM)',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',nz:19}];
+const OVERLAYS=[
+ {id:'lst',name:'حرارية نهارية (MODIS LST)',url:GIBS('MODIS_Terra_Land_Surface_Temp_Day','GoogleMapsCompatible_Level7','png',1),nz:7,op:.6},
+ {id:'lstn',name:'حرارية ليلية (MODIS LST)',url:GIBS('MODIS_Terra_Land_Surface_Temp_Night','GoogleMapsCompatible_Level7','png',1),nz:7,op:.6},
+ {id:'swir',name:'طيفية SWIR 7-2-1 (MODIS)',url:GIBS('MODIS_Terra_CorrectedReflectance_Bands721','GoogleMapsCompatible_Level9','jpg',1),nz:9,op:.8},
+ {id:'nl',name:'أضواء ليلية (VIIRS)',url:GIBS('VIIRS_SNPP_DayNightBand_At_Sensor_Radiance','GoogleMapsCompatible_Level8','png',1),nz:8,op:.7},
+ {id:'relief',name:'تضاريس مظللة (ASTER GDEM)',url:GIBS('ASTER_GDEM_Greyscale_Shaded_Relief','GoogleMapsCompatible_Level12','jpg',0),nz:12,op:.7},
+ {id:'geo',name:'جيولوجية (Macrostrat)',url:'https://tiles.macrostrat.org/carto/{z}/{x}/{y}.png',nz:12,op:.7}];
+const BLENDS=['normal','multiply','screen','overlay','difference','hard-light'];
+const map=L.map('map',{zoomControl:false,worldCopyJump:true}).setView([26,30],5);
+L.control.scale({imperial:false}).addTo(map);
+let base=null,marker=null,active={};
+function mk(d){return L.tileLayer(d.url,{time:day,maxNativeZoom:d.nz,maxZoom:20,opacity:d.op||1,attribution:'NASA GIBS / Esri / OSM / Macrostrat'});}
+function setBase(id){if(base)map.removeLayer(base);const d=BASES.find(b=>b.id===id);base=mk(d);base.addTo(map);base.setZIndex(1);}
+function apply(id){const a=active[id];if(!a)return;const el=a.layer.getContainer();if(!el)return;
+ el.style.filter='contrast('+a.c+') brightness('+a.b+')';el.style.mixBlendMode=a.blend;a.layer.setOpacity(a.o);}
+const panel=document.getElementById('panel');
+let h='<select id="bs">'+BASES.map(b=>'<option value="'+b.id+'">'+b.name+'</option>').join('')+'</select>';
+OVERLAYS.forEach(o=>{h+='<div class="row"><label><input type="checkbox" data-id="'+o.id+'">'+o.name+'</label><div class="ctl" id="c_'+o.id+'">'+
+ '<div>شفافية<input type="range" min="0" max="1" step=".05" value="'+(o.op||1)+'" data-k="o"></div>'+
+ '<div>تباين<input type="range" min=".5" max="3" step=".05" value="1" data-k="c"></div>'+
+ '<div>سطوع<input type="range" min=".4" max="2" step=".05" value="1" data-k="b"></div>'+
+ '<div>دمج<select data-k="blend">'+BLENDS.map(x=>'<option>'+x+'</option>').join('')+'</select></div></div></div>';});
+h+='<p class="small">البيانات الحرارية/الطيفية من NASA GIBS (دقة منخفضة نسبياً). الرادار والأيونوسفير وLandsat/ASTER عالية الدقة ستُضاف في المراحل التالية. النتائج مؤشرات فقط وليست تأكيداً لوجود معادن.</p>';
+panel.innerHTML=h;
+panel.addEventListener('change',e=>{const t=e.target;
+ if(t.id==='bs'){setBase(t.value);return;}
+ if(t.dataset.id){const id=t.dataset.id,d=OVERLAYS.find(x=>x.id===id),box=document.getElementById('c_'+id);
+  if(t.checked){const layer=mk(d);layer.addTo(map);layer.setZIndex(10+OVERLAYS.indexOf(d));active[id]={layer,o:d.op||1,c:1,b:1,blend:'normal'};box.style.display='block';layer.on('load',()=>apply(id));apply(id);}
+  else{map.removeLayer(active[id].layer);delete active[id];box.style.display='none';}}});
+panel.addEventListener('input',e=>{const t=e.target,k=t.dataset.k;if(!k)return;const id=t.closest('.ctl').id.slice(2);
+ if(active[id]){active[id][k]=k==='blend'?t.value:parseFloat(t.value);apply(id);}});
+function show(lat,lon,zoom){if(marker)map.removeLayer(marker);marker=L.marker([lat,lon]).addTo(map);
+ if(zoom)map.setView([lat,lon],zoom);
+ const i=document.getElementById('info');i.style.display='block';
+ i.innerHTML='<b>'+Coords.fmtDD(lat,lon)+'</b><br>'+Coords.fmtDMS(lat,lon)+'<br><span class="small">WGS84 · EPSG:4326</span>';}
+function go(){const r=Coords.parse(document.getElementById('q').value);
+ if(!r){alert('صيغة الإحداثيات غير صحيحة.\nأمثلة:\n30.0444, 31.2357\n30°02\'39.8"N 31°14\'08.5"E');return;}
+ show(r.lat,r.lon,15);}
+document.getElementById('go').onclick=go;
+document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+document.getElementById('lay').onclick=()=>{panel.style.display=panel.style.display==='block'?'none':'block';};
+document.getElementById('loc').onclick=()=>navigator.geolocation.getCurrentPosition(p=>show(p.coords.latitude,p.coords.longitude,15),()=>alert('تعذر تحديد الموقع'),{enableHighAccuracy:true,timeout:15000});
+map.on('click',e=>show(e.latlng.lat,e.latlng.lng,0));
+setBase('sat');
+</script></body></html>
